@@ -1,0 +1,35 @@
+# pyproject.toml (for the pytomlcleaner package)
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pytomlcleaner"
+version = "0.1.0"
+description = "A utility to find and remove unused dependencies in pyproject.toml."
+authors = [{name = "Thien Tran"}]
+license = {text = "MIT"}
+readme = "README.md"
+# Minimum required Python version
+requires-python = ">=3.9" 
+dependencies = [
+    # tomlkit is used for SAFE WRITE operations 
+    "tomlkit>=0.12.0",      
+    # tomli is the backport for tomllib, installed only for Python < 3.11
+    "tomli>=2.0.1 ; python_version < \"3.11\"", 
+    # Used for accurate filtering of built-in modules
+    "stdlib-list>=0.10.0"   
+]
+
+[project.scripts]
+# Defines the command 'pytomlcleaner' that users will run
+pytomlcleaner = "pytomlcleaner.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.uv.workspace]
+members = [
+    "pytomlcleaner",
+]
