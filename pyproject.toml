@@ -15,12 +15,13 @@ keywords = ["toml", "dependencies", "cleanup", "pyproject"]
 # Minimum required Python version
 requires-python = ">=3.9" 
 dependencies = [
-    # tomlkit is used for SAFE WRITE operations 
-    "tomlkit>=0.12.0",      
+    # tomlkit is used for SAFE WRITE operations
+    "tomlkit>=0.12.0",
     # tomli is the backport for tomllib, installed only for Python < 3.11
-    "tomli>=2.0.1 ; python_version < \"3.11\"", 
+    "tomli>=2.0.1 ; python_version < \"3.11\"",
     # Used for accurate filtering of built-in modules
-    "stdlib-list>=0.10.0"   
+    "stdlib-list>=0.10.0",
+    "black>=25.11.0",
 ]
 
 [project.scripts]
