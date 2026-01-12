@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pytomlcleaner"
-version = "0.1.1"
+version = "0.1.2"
 description = "A utility to find and remove unused dependencies in pyproject.toml."
 authors = [{name = "Thien Tran"}]
 license = {text = "Apache-2.0"}
