@@ -44,7 +44,7 @@ BASE_MAPPING = {
     "scikit-image": ["skimage"],
     "tensorboard": ["tensorboard"],
     # Image & Data Processing
-    "pillow": ["pil"],
+    "pillow": ["PIL"],
     "beautifulsoup4": ["bs4"],
     "pyyaml": ["yaml"],
     # Git & Version Control
