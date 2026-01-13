@@ -2,9 +2,10 @@ import os
 import ast
 import re
 import tomlkit
-from typing import Set
+from typing import Set, Dict, List, Any
 import sys
 from pathlib import Path
+from importlib.metadata import distribution, PackageNotFoundError
 
 # --- Conditional Import for TOML Parsing (supporting Python 3.9+) ---
 if sys.version_info >= (3, 11):
@@ -31,6 +32,41 @@ except ImportError:
         "Warning: stdlib-list not installed. Standard library filtering will be less accurate."
     )
     STDLIB = set()
+
+# --- Comprehensive Static Mapping ---
+# Maps package names (as they appear in pyproject.toml) to their import names
+BASE_MAPPING = {
+    # Computer Vision
+    "opencv-python": ["cv2"],
+    "opencv-contrib-python": ["cv2"],
+    # Data Science & ML
+    "scikit-learn": ["sklearn"],
+    "scikit-image": ["skimage"],
+    "tensorboard": ["tensorboard"],
+    # Image & Data Processing
+    "pillow": ["PIL"],
+    "beautifulsoup4": ["bs4"],
+    "pyyaml": ["yaml"],
+    # Git & Version Control
+    "gitpython": ["git"],
+    # Environment & Config
+    "python-dotenv": ["dotenv"],
+    # Web Frameworks & HTTP
+    "fastapi": ["fastapi"],
+    "uvicorn": ["uvicorn"],
+    "uvloop": ["uvloop"],
+    "starlette": ["starlette"],
+    "httpx": ["httpx"],
+    # Utilities
+    "python-multipart": ["multipart"],
+    "pyjwt": ["jwt"],
+    "python-jose": ["jose"],
+    "typing-extensions": ["typing_extensions"],
+    # DVC (Data Version Control)
+    "dvc": ["dvc"],
+    # Download utilities
+    "gdown": ["gdown"],
+}
 
 # --- Configuration/Helpers ---
 # CRITICAL: Packages that are external runners, tools, build systems, or the package itself.
@@ -90,7 +126,171 @@ def is_local_module(import_name: str, base_dir: str) -> bool:
     return False
 
 
-# --- Core Logic Functions ---
+# --- Core Dependency Analyzer Class ---
+
+
+class DependencyAnalyzer:
+    """Comprehensive dependency analyzer supporting Python files, shell scripts, and YAML configs."""
+
+    def __init__(self, root_dir: str = "."):
+        self.root = Path(root_dir)
+        self.found_imports: Set[str] = set()
+        self.config = self._load_config()
+
+    def _load_config(self) -> Dict[str, Any]:
+        """Loads [tool.pytomlcleaner] from pyproject.toml for custom mappings and ignore lists."""
+        path = self.root / "pyproject.toml"
+        if not path.exists():
+            return {}
+        try:
+            # tomllib.load() requires binary mode
+            with open(path, "rb") as f:
+                data = tomllib.load(f)
+            return data.get("tool", {}).get("pytomlcleaner", {})
+        except Exception as e:
+            print(f"⚠️ Warning: Could not load pytomlcleaner config: {e}")
+            return {}
+
+    def get_import_names_for_package(self, package_name: str) -> List[str]:
+        """
+        Resolves PyPI package name to possible import names.
+        Priority order: custom mappings → BASE_MAPPING → installed package metadata → standard normalization
+        """
+        normalized = package_name.lower().replace("_", "-")
+
+        # Priority 1: User Custom Mappings from [tool.pytomlcleaner]
+        custom = self.config.get("custom_mappings", {})
+        if normalized in custom:
+            custom_imports = custom[normalized]
+            # Handle both string and list formats
+            return (
+                custom_imports if isinstance(custom_imports, list) else [custom_imports]
+            )
+
+        # Priority 2: Hardcoded BASE_MAPPING
+        if normalized in BASE_MAPPING:
+            return BASE_MAPPING[normalized]
+
+        # Priority 3: Dynamic Metadata Lookup (if package is installed)
+        try:
+            dist = distribution(package_name)
+            top_level_file = dist.read_text("top_level.txt")
+            if top_level_file:
+                return [
+                    line.strip() for line in top_level_file.splitlines() if line.strip()
+                ]
+        except PackageNotFoundError:
+            # Package is not installed; fall back to standard normalization below.
+            pass
+        except Exception as e:
+            print(
+                f"⚠️ Warning: Error reading metadata for package '{package_name}': {e}"
+            )
+
+        # Priority 4: Standard Normalization (replace hyphens with underscores)
+        return [package_name.replace("-", "_")]
+
+    def scan_python_files(self) -> None:
+        """AST-based scanning of Python files to extract all imports."""
+        for py_file in self.root.rglob("*.py"):
+            # Skip excluded directories
+            if any(excluded in py_file.parts for excluded in EXCLUDE_DIRS):
+                continue
+
+            try:
+                content = py_file.read_text(encoding="utf-8")
+                tree = ast.parse(content, filename=str(py_file))
+
+                for node in ast.walk(tree):
+                    # Handle 'import x, y.z'
+                    if isinstance(node, ast.Import):
+                        for alias in node.names:
+                            # Split and add all top-level and sub-modules
+                            parts = alias.name.split(".")
+                            for i in range(len(parts)):
+                                self.found_imports.add(parts[i].lower())
+
+                    # Handle 'from x.y import z' - focus on module path
+                    elif isinstance(node, ast.ImportFrom) and node.module:
+                        parts = node.module.split(".")
+                        for i in range(len(parts)):
+                            self.found_imports.add(parts[i].lower())
+
+                # Fallback regex for edge cases (type checking guards, conditionals)
+                matches = re.findall(r"(?:import|from)\s+([a-zA-Z0-9_.]+)", content)
+                for match in matches:
+                    parts = match.split(".")
+                    for i in range(len(parts)):
+                        self.found_imports.add(parts[i].lower())
+
+            except Exception as e:
+                print(f"⚠️ Could not parse {py_file}: {e}")
+
+    def scan_non_python_files(self) -> None:
+        """
+        Regex scanning for shell scripts, YAML, and Dockerfiles to detect CLI tool usage.
+        This helps catch packages used as command-line tools (e.g., gdown, dvc).
+        """
+        extensions = [".sh", ".yml", ".yaml", "Dockerfile", ".txt"]
+
+        for ext in extensions:
+            for file_path in self.root.rglob(f"*{ext}"):
+                # Skip excluded directories
+                if any(excluded in file_path.parts for excluded in EXCLUDE_DIRS):
+                    continue
+
+                try:
+                    content = file_path.read_text(encoding="utf-8")
+
+                    # Look for known CLI tools/packages used in scripts
+                    # This check is done against BASE_MAPPING and all package names
+                    for pkg_name in BASE_MAPPING.keys():
+                        # Use word boundary to avoid partial matches
+                        if re.search(
+                            rf"\b{re.escape(pkg_name.replace('_', '-'))}\b", content
+                        ):
+                            self.found_imports.add(pkg_name.lower())
+
+                except Exception:
+                    # Skip files that can't be read (binary, encoding issues, etc.)
+                    continue
+
+    def identify_unused(self, declared_deps: List[str]) -> List[str]:
+        """
+        Compares declared dependencies against found imports.
+        Returns list of packages that appear to be unused.
+        """
+        unused = []
+        user_ignores = set(self.config.get("ignore", []))
+
+        for dep in declared_deps:
+            dep_lower = dep.lower()
+
+            # Skip user-ignored packages
+            if dep_lower in user_ignores:
+                continue
+
+            # Skip always-ignored packages
+            if dep_lower in IGNORE_PACKAGES:
+                continue
+
+            # Get all possible import names for this package
+            possible_imports = self.get_import_names_for_package(dep)
+
+            # Check if ANY of the possible import names were found in scanned code
+            found = False
+            for import_name in possible_imports:
+                if import_name.lower() in self.found_imports:
+                    found = True
+                    break
+
+            if not found:
+                unused.append(dep)
+
+        return unused
+
+
+# --- Legacy Functions for Backward Compatibility ---
 
 
 def get_dependencies(path: str = "pyproject.toml") -> Set[str]:
@@ -129,43 +329,21 @@ def get_dependencies(path: str = "pyproject.toml") -> Set[str]:
 
 
 def get_all_imports(root_dir: str = ".") -> Set[str]:
-    """Scans all .py files in a directory for top-level import names using AST."""
-    used_imports = set()
+    """
+    Scans all .py files and non-Python files in a directory for imports using AST,
+    regex patterns, and shell script analysis. Uses improved DependencyAnalyzer internally.
+    """
+    analyzer = DependencyAnalyzer(root_dir)
 
-    for root, dirs, files in os.walk(root_dir):
-        # Filter directories to exclude
-        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+    # Scan Python files via AST
+    analyzer.scan_python_files()
 
-        for file in files:
-            if file.endswith(".py"):
-                filepath = os.path.join(root, file)
-                try:
-                    with open(filepath, "r", encoding="utf-8") as f:
-                        content = f.read()
-                        tree = ast.parse(content, filename=filepath)
-                except Exception as e:
-                    print(f"Warning: Could not parse {filepath}: {e}")
-                    continue
-
-                for node in ast.walk(tree):
-                    # Handle 'import requests'
-                    if isinstance(node, ast.Import):
-                        for alias in node.names:
-                            used_imports.add(alias.name.split(".")[0].lower())
-
-                    # Handle 'from requests import get'
-                    elif isinstance(node, ast.ImportFrom):
-                        if node.module:
-                            used_imports.add(node.module.split(".")[0].lower())
-
-                # Heuristic check for string-based/guarded imports (e.g., in type checking or docstrings)
-                matches = re.findall(r"(?:import|from)\s+([a-zA-Z0-9_.]+)", content)
-                for match in matches:
-                    used_imports.add(match.split(".")[0].lower())
+    # Scan shell/YAML files for CLI tool usage
+    analyzer.scan_non_python_files()
 
     # Filter out standard library modules and local modules
     final_imports = set()
-    for imp in used_imports:
+    for imp in analyzer.found_imports:
         if imp not in STDLIB and not is_local_module(imp, root_dir):
             final_imports.add(imp)
 
@@ -182,25 +360,20 @@ def find_unused_dependencies(
     """
     Compares dependencies to actual imports and returns unused packages,
     EXCLUDING those defined in IGNORE_PACKAGES.
+    Uses the new DependencyAnalyzer for improved accuracy.
     """
+    # Create analyzer and run scans
+    analyzer = DependencyAnalyzer(code_root)
+    analyzer.scan_python_files()
+    analyzer.scan_non_python_files()
 
+    # Get declared dependencies
     project_dependencies = get_dependencies(pyproject_path)
-    used_imports = get_all_imports(code_root)
 
-    # 1. Calculate the raw difference: dependencies not found in imports
-    unused_deps = project_dependencies - used_imports
+    # Identify unused
+    unused_deps = analyzer.identify_unused(list(project_dependencies))
 
-    # 2. CRITICAL FILTER: Subtract the manually ignored packages
-    final_unused_deps = unused_deps - IGNORE_PACKAGES
-
-    # 3. Optional: Print a note about the packages we skipped removing
-    ignored_but_unused = unused_deps.intersection(IGNORE_PACKAGES)
-    if ignored_but_unused:
-        print(
-            f"\n💡 Note: Skipping removal of utility packages: {', '.join(sorted(ignored_but_unused))}"
-        )
-
-    return final_unused_deps
+    return set(unused_deps)
 
 
 def remove_unused_dependencies(pyproject_path: str, unused_packages: Set[str]) -> None:
