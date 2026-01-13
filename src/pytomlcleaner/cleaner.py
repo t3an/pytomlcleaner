@@ -180,9 +180,12 @@ class DependencyAnalyzer:
                     line.strip() for line in top_level_file.splitlines() if line.strip()
                 ]
         except PackageNotFoundError:
+            # Package is not installed; fall back to standard normalization below.
             pass
         except Exception as e:
-            pass
+            print(
+                f"⚠️ Warning: Error reading metadata for package '{package_name}': {e}"
+            )
 
         # Priority 4: Standard Normalization (replace hyphens with underscores)
         return [package_name.replace("-", "_")]
