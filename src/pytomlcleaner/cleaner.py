@@ -135,7 +135,40 @@ def normalize_name(name: str) -> str:
 
 
 def is_similar(package_name: str, import_name: str, threshold: float = 0.6) -> bool:
-    """Check if package name and import name are similar using sequence matching."""
+    """
+    Check if a package name and an import name are similar using sequence matching.
+
+    The comparison is performed on normalized names (lowercased with hyphens and
+    underscores removed). Exact matches and simple substring relations are treated
+    as similar without consulting the fuzzy matcher.
+
+    For non-trivial cases, :class:`difflib.SequenceMatcher` is used to compute a
+    similarity ratio in the range [0.0, 1.0]. The ``threshold`` parameter controls
+    how strict this fuzzy comparison is:
+
+    * The default value of ``0.6`` was chosen as a pragmatic balance between
+      catching common naming variations (for example, ``"pandas-datareader"``
+      vs. ``"pandas_datareader"`` or shortened import names) and avoiding
+      spurious matches between unrelated packages and modules.
+    * Increasing the threshold (e.g. to ``0.8`` or ``0.9``) makes matching more
+      conservative: you will see fewer matches, reducing false positives but
+      potentially missing legitimate dependencies that use slightly different
+      names.
+    * Decreasing the threshold (e.g. to ``0.4`` or ``0.5``) makes matching more
+      permissive: you will see more matches, which can help discover loosely
+      related names but increases the risk of false positives in dependency
+      detection.
+
+    Parameters
+    ----------
+    package_name:
+        The name of the installed/discovered package.
+    import_name:
+        The name as it appears in an import statement in the codebase.
+    threshold:
+        Minimum similarity ratio required for the two names to be considered
+        a match. Defaults to ``0.6``.
+    """
     # Normalize both names for comparison
     norm_pkg = normalize_name(package_name)
     norm_imp = normalize_name(import_name)
