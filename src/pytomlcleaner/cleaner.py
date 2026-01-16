@@ -1,10 +1,34 @@
+"""
+Core dependency analysis and cleaning module for pytomlcleaner.
+
+MAIN FUNCTIONS:
+===============
+- discover_used_packages()       → Scan code and return used packages
+- populate_pyproject_toml()      → Generate/populate pyproject.toml from code
+- find_unused_dependencies()     → Compare declared vs actual dependencies
+- remove_unused_dependencies()   → Remove unused from pyproject.toml
+
+WORKFLOW STRATEGY:
+==================
+
+For EMPTY pyproject.toml:
+  1. discover_used_packages() → scan codebase
+  2. populate_pyproject_toml() → create file with dependencies
+
+For EXISTING pyproject.toml:
+  1. find_unused_dependencies() → identify unused packages
+  2. remove_unused_dependencies() → remove unused with confirmation
+
+See COMPLETE_WORKFLOW.md for detailed examples.
+"""
+
 from __future__ import annotations
 
 import os
 import ast
 import re
 import tomlkit
-from typing import Set, Dict, List, Any
+from typing import Set, Dict, List, Any, cast
 import sys
 from pathlib import Path
 from importlib.metadata import distribution, PackageNotFoundError
@@ -475,9 +499,9 @@ def remove_unused_dependencies(pyproject_path: str, unused_packages: Set[str]) -
 
     # 1. Handle PEP 621 'project.dependencies' (Array of Strings)
     if "project" in doc:
-        project_section = doc["project"]
-        if isinstance(project_section, dict) and "dependencies" in project_section:
-            project_deps = project_section["dependencies"]
+        project_section = cast(tomlkit.items.Table, doc["project"])
+        if "dependencies" in project_section:
+            project_deps = cast(tomlkit.items.Array, project_section["dependencies"])
             if isinstance(project_deps, tomlkit.items.Array):
                 # Iterate backwards to safely delete items from the list/array
                 for i in range(len(project_deps) - 1, -1, -1):
@@ -502,11 +526,11 @@ def remove_unused_dependencies(pyproject_path: str, unused_packages: Set[str]) -
 
     # 2. Handle Poetry/Tool-specific dependencies (Table of key-value pairs)
     if "tool" in doc:
-        tool_section = doc["tool"]
-        if isinstance(tool_section, dict) and "poetry" in tool_section:
-            poetry_section = tool_section["poetry"]
-            if isinstance(poetry_section, dict) and "dependencies" in poetry_section:
-                poetry_deps = poetry_section["dependencies"]
+        tool_section = cast(tomlkit.items.Table, doc["tool"])
+        if "poetry" in tool_section:
+            poetry_section = cast(tomlkit.items.Table, tool_section["poetry"])
+            if "dependencies" in poetry_section:
+                poetry_deps = cast(tomlkit.items.Table, poetry_section["dependencies"])
                 if isinstance(poetry_deps, tomlkit.items.Table):
                     keys_to_remove = set()
                     for pkg, _ in poetry_deps.items():
@@ -516,7 +540,7 @@ def remove_unused_dependencies(pyproject_path: str, unused_packages: Set[str]) -
                     for pkg in keys_to_remove:
                         print(f"   -> Removing Poetry dependency: **{pkg}**")
                         # Delete the key in place
-                        del poetry_deps[pkg]
+                        del poetry_deps[pkg]  # type: ignore
 
     # 3. Write the modified document back
     try:
@@ -527,3 +551,156 @@ def remove_unused_dependencies(pyproject_path: str, unused_packages: Set[str]) -
         )
     except Exception as e:
         print(f"\n❌ Failed to write to {pyproject_path}: {e}")
+
+
+def discover_used_packages(code_root: str = ".") -> List[str]:
+    """
+    Discovers all packages actually used in the codebase by scanning for imports.
+    Returns a sorted list of package names that should be included in dependencies.
+    Excludes standard library, local modules, and ignore packages.
+    """
+    analyzer = DependencyAnalyzer(code_root)
+    analyzer.scan_python_files()
+    analyzer.scan_non_python_files()
+
+    # Get all found imports
+    found_imports = analyzer.found_imports.copy()
+
+    # Filter out stdlib and local modules
+    used_packages = set()
+    for imp in found_imports:
+        if (
+            imp not in STDLIB
+            and not is_local_module(imp, code_root)
+            and imp not in IGNORE_PACKAGES
+        ):
+            used_packages.add(imp)
+
+    # Map import names back to package names using reverse mapping
+    discovered_packages = set()
+
+    # First, try to resolve each import to a package name
+    for imp in used_packages:
+        found_package = False
+
+        # Check BASE_MAPPING (reverse lookup)
+        for pkg_name, import_names in BASE_MAPPING.items():
+            if imp in [i.lower() for i in import_names]:
+                discovered_packages.add(pkg_name)
+                found_package = True
+                break
+
+        if not found_package:
+            # Try to find installed package with this import name
+            try:
+                # Try as-is first
+                dist = distribution(imp)
+                discovered_packages.add(dist.metadata["Name"].lower())
+            except PackageNotFoundError:
+                try:
+                    # Try with underscores converted to hyphens
+                    dist = distribution(imp.replace("_", "-"))
+                    discovered_packages.add(dist.metadata["Name"].lower())
+                except PackageNotFoundError:
+                    # If not found, add the import name itself (user will need to verify)
+                    discovered_packages.add(imp)
+
+    return sorted(list(discovered_packages))
+
+
+def populate_pyproject_toml(
+    pyproject_path: str = "pyproject.toml", code_root: str = ".", force: bool = False
+) -> bool:
+    """
+    Discovers used packages and populates pyproject.toml if it's empty or missing.
+
+    Args:
+        pyproject_path: Path to pyproject.toml file
+        code_root: Root directory to scan for imports
+        force: If True, overwrites existing dependencies; if False, only adds to empty files
+
+    Returns:
+        True if file was created/updated, False otherwise
+    """
+    print(f"🔍 Discovering packages used in {code_root}...")
+
+    # Discover packages
+    discovered_packages = discover_used_packages(code_root)
+
+    if not discovered_packages:
+        print("⚠️ No packages discovered in codebase.")
+        return False
+
+    print(f"\n✅ Found **{len(discovered_packages)}** package(s) used in the codebase:")
+    for pkg in discovered_packages:
+        print(f"   • {pkg}")
+
+    # Check if pyproject.toml exists and is empty/minimal
+    pyproject_path_obj = Path(pyproject_path)
+    is_empty = False
+    doc = tomlkit.document()
+
+    if pyproject_path_obj.exists():
+        try:
+            with open(pyproject_path, "r", encoding="utf-8") as f:
+                doc = tomlkit.load(f)
+
+            # Check if dependencies section exists and has content
+            existing_deps = doc.get("project", {}).get("dependencies", []) or doc.get(
+                "tool", {}
+            ).get("poetry", {}).get("dependencies", {})
+
+            if not existing_deps and not force:
+                is_empty = True
+                print("\n⚠️ pyproject.toml exists but has no dependencies section.")
+            elif existing_deps and not force:
+                print(
+                    "\n⚠️ pyproject.toml already has dependencies. Use --force to overwrite."
+                )
+                return False
+        except Exception as e:
+            print(f"⚠️ Could not read pyproject.toml: {e}")
+            if not force:
+                return False
+    else:
+        is_empty = True
+
+    # If file doesn't exist or is empty, create/populate it
+    if is_empty or force:
+        print("\n📝 Populating pyproject.toml with discovered packages...")
+
+        # Ensure project section exists
+        if "project" not in doc:
+            doc["project"] = tomlkit.table()
+
+        project_section = cast(tomlkit.items.Table, doc["project"])
+
+        # Set basic project metadata if not present
+        if "name" not in project_section:
+            project_section["name"] = Path(code_root).name or "my-project"
+
+        if "version" not in project_section:
+            project_section["version"] = "0.1.0"
+
+        if "description" not in project_section:
+            project_section["description"] = ""
+
+        # Add dependencies
+        dependencies = [f"{pkg}" for pkg in discovered_packages]
+        project_section["dependencies"] = dependencies
+
+        # Write to file
+        try:
+            pyproject_path_obj.parent.mkdir(parents=True, exist_ok=True)
+            with open(pyproject_path, "w", encoding="utf-8") as f:
+                f.write(doc.as_string())
+            print(f"\n✅ Successfully created/updated **{pyproject_path}**")
+            print(
+                f"   Added **{len(discovered_packages)}** dependencies to [project.dependencies]"
+            )
+            return True
+        except Exception as e:
+            print(f"\n❌ Failed to write to {pyproject_path}: {e}")
+            return False
+
+    return False
