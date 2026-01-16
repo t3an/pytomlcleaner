@@ -24,15 +24,16 @@ See COMPLETE_WORKFLOW.md for detailed examples.
 
 from __future__ import annotations
 
-import os
 import ast
+import os
 import re
-import tomlkit
-from typing import Set, Dict, List, Any, cast
 import sys
-from pathlib import Path
-from importlib.metadata import distribution, PackageNotFoundError
 from difflib import SequenceMatcher
+from importlib.metadata import PackageNotFoundError, distribution
+from pathlib import Path
+from typing import Any, Dict, List, Set, cast
+
+import tomlkit
 
 # --- Conditional Import for TOML Parsing (supporting Python 3.9+) ---
 if sys.version_info >= (3, 11):

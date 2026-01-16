@@ -32,12 +32,9 @@ For more details, see COMPLETE_WORKFLOW.md
 """
 
 import argparse
-from .cleaner import (
-    find_unused_dependencies,
-    remove_unused_dependencies,
-    DependencyAnalyzer,
-    populate_pyproject_toml,
-)
+
+from .cleaner import (DependencyAnalyzer, find_unused_dependencies,
+                      populate_pyproject_toml, remove_unused_dependencies)
 
 
 def main():

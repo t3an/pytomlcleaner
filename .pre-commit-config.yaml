@@ -1,0 +1,48 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-yaml
+
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        language_version: python3
+        files: ^(.*/)?(src|tests)/.*\.py$
+
+  - repo: https://github.com/PyCQA/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        files: ^(.*/)?(src|tests)/.*\.py$
+
+  - repo: local
+    hooks:
+      - id: pylint
+        name: pylint (src)
+        entry: pylint
+        language: system
+        types: [python]
+        files: ^(.*/)?src/.*\.py$
+        args: ["-rn"]
+        stages: [commit]
+
+      - id: mypy
+        name: mypy (src)
+        entry: mypy
+        language: system
+        types: [python]
+        files: ^(.*/)?src/.*\.py$
+        args: ["--ignore-missing-imports"]
+        stages: [commit]
+
+      - id: pytest
+        name: pytest (quick)
+        entry: bash -c 'pytest -q --maxfail=1'
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

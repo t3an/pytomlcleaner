@@ -13,7 +13,7 @@ license = {text = "Apache-2.0"}
 readme = "README.md"
 keywords = ["toml", "dependencies", "cleanup", "pyproject"]
 # Minimum required Python version
-requires-python = ">=3.9" 
+requires-python = ">=3.9"
 dependencies = [
     # tomlkit is used for SAFE WRITE operations
     "tomlkit>=0.12.0",
@@ -23,6 +23,7 @@ dependencies = [
     "stdlib-list>=0.10.0",
     "black>=25.11.0",
     "mypy>=1.19.1",
+    "pre-commit>=4.3.0",
 ]
 
 [project.scripts]
