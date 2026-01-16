@@ -6,6 +6,7 @@ from typing import Set, Dict, List, Any
 import sys
 from pathlib import Path
 from importlib.metadata import distribution, PackageNotFoundError
+from difflib import SequenceMatcher
 
 # --- Conditional Import for TOML Parsing (supporting Python 3.9+) ---
 if sys.version_info >= (3, 11):
@@ -126,6 +127,28 @@ def is_local_module(import_name: str, base_dir: str) -> bool:
     return False
 
 
+def normalize_name(name: str) -> str:
+    """Normalize a name by removing hyphens, underscores, and converting to lowercase."""
+    return name.replace("-", "").replace("_", "").lower()
+
+
+def is_similar(package_name: str, import_name: str, threshold: float = 0.6) -> bool:
+    """Check if package name and import name are similar using sequence matching."""
+    # Normalize both names for comparison
+    norm_pkg = normalize_name(package_name)
+    norm_imp = normalize_name(import_name)
+
+    # Check for exact match or substring
+    if norm_pkg == norm_imp:
+        return True
+    if norm_pkg in norm_imp or norm_imp in norm_pkg:
+        return True
+
+    # Use sequence matching for fuzzy comparison
+    similarity = SequenceMatcher(None, norm_pkg, norm_imp).ratio()
+    return similarity >= threshold
+
+
 # --- Core Dependency Analyzer Class ---
 
 
@@ -205,23 +228,33 @@ class DependencyAnalyzer:
                     # Handle 'import x, y.z'
                     if isinstance(node, ast.Import):
                         for alias in node.names:
-                            # Split and add all top-level and sub-modules
-                            parts = alias.name.split(".")
-                            for i in range(len(parts)):
-                                self.found_imports.add(parts[i].lower())
+                            # Extract all parts of the module path
+                            parts = alias.name.split("")
+                            for part in parts:
+                                if part:  # Skip empty strings
+                                    self.found_imports.add(part.lower())
 
-                    # Handle 'from x.y import z' - focus on module path
-                    elif isinstance(node, ast.ImportFrom) and node.module:
-                        parts = node.module.split(".")
-                        for i in range(len(parts)):
-                            self.found_imports.add(parts[i].lower())
+                    # Handle 'from x.y.z import a, b'
+                    elif isinstance(node, ast.ImportFrom):
+                        # Extract all parts of the module path
+                        if node.module:
+                            parts = node.module.split(".")
+                            for part in parts:
+                                if part:  # Skip empty strings
+                                    self.found_imports.add(part.lower())
+
+                        # Also extract the imported names themselves
+                        for alias in node.names:
+                            if alias.name != "*":  # Skip wildcard imports
+                                self.found_imports.add(alias.name.lower())
 
                 # Fallback regex for edge cases (type checking guards, conditionals)
                 matches = re.findall(r"(?:import|from)\s+([a-zA-Z0-9_.]+)", content)
                 for match in matches:
                     parts = match.split(".")
-                    for i in range(len(parts)):
-                        self.found_imports.add(parts[i].lower())
+                    for part in parts:
+                        if part:  # Skip empty strings
+                            self.found_imports.add(part.lower())
 
             except Exception as e:
                 print(f"⚠️ Could not parse {py_file}: {e}")
@@ -257,7 +290,7 @@ class DependencyAnalyzer:
 
     def identify_unused(self, declared_deps: List[str]) -> List[str]:
         """
-        Compares declared dependencies against found imports.
+        Compares declared dependencies against found imports using exact and fuzzy matching.
         Returns list of packages that appear to be unused.
         """
         unused = []
@@ -279,10 +312,27 @@ class DependencyAnalyzer:
 
             # Check if ANY of the possible import names were found in scanned code
             found = False
+
+            # First, try exact matching
             for import_name in possible_imports:
                 if import_name.lower() in self.found_imports:
                     found = True
                     break
+
+            # If not found by exact match, try similarity matching
+            if not found:
+                for found_import in self.found_imports:
+                    # Check similarity with package name
+                    if is_similar(dep, found_import):
+                        found = True
+                        break
+                    # Check similarity with each possible import name
+                    for import_name in possible_imports:
+                        if is_similar(import_name, found_import):
+                            found = True
+                            break
+                    if found:
+                        break
 
             if not found:
                 unused.append(dep)
