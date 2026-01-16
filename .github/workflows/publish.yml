@@ -33,10 +33,10 @@ jobs:
         run: python -m pip install -e ".[dev]" build
 
       - name: Run mypy type check
-        run: uv mypy src
+        run: uv run mypy src
 
       - name: Run tests
-        run: pytest test
+        run: uv run pytest test
 
       # - name: Build package
       #   run: python -m build
