@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import ast
 import re
@@ -345,7 +347,7 @@ class DependencyAnalyzer:
 
 def get_dependencies(path: str = "pyproject.toml") -> Set[str]:
     """Reads project dependencies from pyproject.toml, targeting PEP 621 and Poetry styles."""
-    dependencies = set()
+    dependencies: set[str] = set()
 
     try:
         with open(path, "rb") as f:
@@ -439,47 +441,49 @@ def remove_unused_dependencies(pyproject_path: str, unused_packages: Set[str]) -
         return
 
     # 1. Handle PEP 621 'project.dependencies' (Array of Strings)
-    if "project" in doc and "dependencies" in doc["project"]:
-        project_deps = doc["project"]["dependencies"]
-        if isinstance(project_deps, tomlkit.items.Array):
-            # Iterate backwards to safely delete items from the list/array
-            for i in range(len(project_deps) - 1, -1, -1):
-                dep_item = project_deps[i]
-                dep_str = str(dep_item)
-                # Logic to extract package name from dependency string
-                package_name = (
-                    dep_str.split(";")[0]
-                    .split("<")[0]
-                    .split(">")[0]
-                    .split("=")[0]
-                    .split("~")[0]
-                    .split("!")[0]
-                    .strip()
-                    .lower()
-                )
+    if "project" in doc:
+        project_section = doc["project"]
+        if isinstance(project_section, dict) and "dependencies" in project_section:
+            project_deps = project_section["dependencies"]
+            if isinstance(project_deps, tomlkit.items.Array):
+                # Iterate backwards to safely delete items from the list/array
+                for i in range(len(project_deps) - 1, -1, -1):
+                    dep_item = project_deps[i]
+                    dep_str = str(dep_item)
+                    # Logic to extract package name from dependency string
+                    package_name = (
+                        dep_str.split(";")[0]
+                        .split("<")[0]
+                        .split(">")[0]
+                        .split("=")[0]
+                        .split("~")[0]
+                        .split("!")[0]
+                        .strip()
+                        .lower()
+                    )
 
-                if package_name in unused_packages:
-                    print(f"   -> Removing standard dependency: **{dep_item}**")
-                    # Delete the item in place
-                    del project_deps[i]
+                    if package_name in unused_packages:
+                        print(f"   -> Removing standard dependency: **{dep_item}**")
+                        # Delete the item in place
+                        del project_deps[i]
 
     # 2. Handle Poetry/Tool-specific dependencies (Table of key-value pairs)
-    if (
-        "tool" in doc
-        and "poetry" in doc["tool"]
-        and "dependencies" in doc["tool"]["poetry"]
-    ):
-        poetry_deps = doc["tool"]["poetry"]["dependencies"]
-        if isinstance(poetry_deps, tomlkit.items.Table):
-            keys_to_remove = set()
-            for pkg, _ in poetry_deps.items():
-                if pkg.lower() in unused_packages and pkg.lower() != "python":
-                    keys_to_remove.add(pkg)
+    if "tool" in doc:
+        tool_section = doc["tool"]
+        if isinstance(tool_section, dict) and "poetry" in tool_section:
+            poetry_section = tool_section["poetry"]
+            if isinstance(poetry_section, dict) and "dependencies" in poetry_section:
+                poetry_deps = poetry_section["dependencies"]
+                if isinstance(poetry_deps, tomlkit.items.Table):
+                    keys_to_remove = set()
+                    for pkg, _ in poetry_deps.items():
+                        if pkg.lower() in unused_packages and pkg.lower() != "python":
+                            keys_to_remove.add(pkg)
 
-            for pkg in keys_to_remove:
-                print(f"   -> Removing Poetry dependency: **{pkg}**")
-                # Delete the key in place
-                del poetry_deps[pkg]
+                    for pkg in keys_to_remove:
+                        print(f"   -> Removing Poetry dependency: **{pkg}**")
+                        # Delete the key in place
+                        del poetry_deps[pkg]
 
     # 3. Write the modified document back
     try:
