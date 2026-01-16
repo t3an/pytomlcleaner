@@ -231,7 +231,7 @@ class DependencyAnalyzer:
                     if isinstance(node, ast.Import):
                         for alias in node.names:
                             # Extract all parts of the module path
-                            parts = alias.name.split("")
+                            parts = alias.name.split(".")
                             for part in parts:
                                 if part:  # Skip empty strings
                                     self.found_imports.add(part.lower())
