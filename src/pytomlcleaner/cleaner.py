@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import ast
 import re
@@ -6,6 +8,7 @@ from typing import Set, Dict, List, Any
 import sys
 from pathlib import Path
 from importlib.metadata import distribution, PackageNotFoundError
+from difflib import SequenceMatcher
 
 # --- Conditional Import for TOML Parsing (supporting Python 3.9+) ---
 if sys.version_info >= (3, 11):
@@ -44,7 +47,7 @@ BASE_MAPPING = {
     "scikit-image": ["skimage"],
     "tensorboard": ["tensorboard"],
     # Image & Data Processing
-    "pillow": ["pil"],
+    "pillow": ["PIL"],
     "beautifulsoup4": ["bs4"],
     "pyyaml": ["yaml"],
     # Git & Version Control
@@ -126,6 +129,61 @@ def is_local_module(import_name: str, base_dir: str) -> bool:
     return False
 
 
+def normalize_name(name: str) -> str:
+    """Normalize a name by removing hyphens, underscores, and converting to lowercase."""
+    return name.replace("-", "").replace("_", "").lower()
+
+
+def is_similar(package_name: str, import_name: str, threshold: float = 0.6) -> bool:
+    """
+    Check if a package name and an import name are similar using sequence matching.
+
+    The comparison is performed on normalized names (lowercased with hyphens and
+    underscores removed). Exact matches and simple substring relations are treated
+    as similar without consulting the fuzzy matcher.
+
+    For non-trivial cases, :class:`difflib.SequenceMatcher` is used to compute a
+    similarity ratio in the range [0.0, 1.0]. The ``threshold`` parameter controls
+    how strict this fuzzy comparison is:
+
+    * The default value of ``0.6`` was chosen as a pragmatic balance between
+      catching common naming variations (for example, ``"pandas-datareader"``
+      vs. ``"pandas_datareader"`` or shortened import names) and avoiding
+      spurious matches between unrelated packages and modules.
+    * Increasing the threshold (e.g. to ``0.8`` or ``0.9``) makes matching more
+      conservative: you will see fewer matches, reducing false positives but
+      potentially missing legitimate dependencies that use slightly different
+      names.
+    * Decreasing the threshold (e.g. to ``0.4`` or ``0.5``) makes matching more
+      permissive: you will see more matches, which can help discover loosely
+      related names but increases the risk of false positives in dependency
+      detection.
+
+    Parameters
+    ----------
+    package_name:
+        The name of the installed/discovered package.
+    import_name:
+        The name as it appears in an import statement in the codebase.
+    threshold:
+        Minimum similarity ratio required for the two names to be considered
+        a match. Defaults to ``0.6``.
+    """
+    # Normalize both names for comparison
+    norm_pkg = normalize_name(package_name)
+    norm_imp = normalize_name(import_name)
+
+    # Check for exact match or substring
+    if norm_pkg == norm_imp:
+        return True
+    if norm_pkg in norm_imp or norm_imp in norm_pkg:
+        return True
+
+    # Use sequence matching for fuzzy comparison
+    similarity = SequenceMatcher(None, norm_pkg, norm_imp).ratio()
+    return similarity >= threshold
+
+
 # --- Core Dependency Analyzer Class ---
 
 
@@ -180,9 +238,12 @@ class DependencyAnalyzer:
                     line.strip() for line in top_level_file.splitlines() if line.strip()
                 ]
         except PackageNotFoundError:
+            # Package is not installed; fall back to standard normalization below.
             pass
         except Exception as e:
-            pass
+            print(
+                f"⚠️ Warning: Error reading metadata for package '{package_name}': {e}"
+            )
 
         # Priority 4: Standard Normalization (replace hyphens with underscores)
         return [package_name.replace("-", "_")]
@@ -202,23 +263,33 @@ class DependencyAnalyzer:
                     # Handle 'import x, y.z'
                     if isinstance(node, ast.Import):
                         for alias in node.names:
-                            # Split and add all top-level and sub-modules
+                            # Extract all parts of the module path
                             parts = alias.name.split(".")
-                            for i in range(len(parts)):
-                                self.found_imports.add(parts[i].lower())
+                            for part in parts:
+                                if part:  # Skip empty strings
+                                    self.found_imports.add(part.lower())
 
-                    # Handle 'from x.y import z' - focus on module path
-                    elif isinstance(node, ast.ImportFrom) and node.module:
-                        parts = node.module.split(".")
-                        for i in range(len(parts)):
-                            self.found_imports.add(parts[i].lower())
+                    # Handle 'from x.y.z import a, b'
+                    elif isinstance(node, ast.ImportFrom):
+                        # Extract all parts of the module path
+                        if node.module:
+                            parts = node.module.split(".")
+                            for part in parts:
+                                if part:  # Skip empty strings
+                                    self.found_imports.add(part.lower())
+
+                        # Also extract the imported names themselves
+                        for alias in node.names:
+                            if alias.name != "*":  # Skip wildcard imports
+                                self.found_imports.add(alias.name.lower())
 
                 # Fallback regex for edge cases (type checking guards, conditionals)
                 matches = re.findall(r"(?:import|from)\s+([a-zA-Z0-9_.]+)", content)
                 for match in matches:
                     parts = match.split(".")
-                    for i in range(len(parts)):
-                        self.found_imports.add(parts[i].lower())
+                    for part in parts:
+                        if part:  # Skip empty strings
+                            self.found_imports.add(part.lower())
 
             except Exception as e:
                 print(f"⚠️ Could not parse {py_file}: {e}")
@@ -254,7 +325,7 @@ class DependencyAnalyzer:
 
     def identify_unused(self, declared_deps: List[str]) -> List[str]:
         """
-        Compares declared dependencies against found imports.
+        Compares declared dependencies against found imports using exact and fuzzy matching.
         Returns list of packages that appear to be unused.
         """
         unused = []
@@ -276,10 +347,27 @@ class DependencyAnalyzer:
 
             # Check if ANY of the possible import names were found in scanned code
             found = False
+
+            # First, try exact matching
             for import_name in possible_imports:
                 if import_name.lower() in self.found_imports:
                     found = True
                     break
+
+            # If not found by exact match, try similarity matching
+            if not found:
+                for found_import in self.found_imports:
+                    # Check similarity with package name
+                    if is_similar(dep, found_import):
+                        found = True
+                        break
+                    # Check similarity with each possible import name
+                    for import_name in possible_imports:
+                        if is_similar(import_name, found_import):
+                            found = True
+                            break
+                    if found:
+                        break
 
             if not found:
                 unused.append(dep)
@@ -292,7 +380,7 @@ class DependencyAnalyzer:
 
 def get_dependencies(path: str = "pyproject.toml") -> Set[str]:
     """Reads project dependencies from pyproject.toml, targeting PEP 621 and Poetry styles."""
-    dependencies = set()
+    dependencies: set[str] = set()
 
     try:
         with open(path, "rb") as f:
@@ -386,47 +474,49 @@ def remove_unused_dependencies(pyproject_path: str, unused_packages: Set[str]) -
         return
 
     # 1. Handle PEP 621 'project.dependencies' (Array of Strings)
-    if "project" in doc and "dependencies" in doc["project"]:
-        project_deps = doc["project"]["dependencies"]
-        if isinstance(project_deps, tomlkit.items.Array):
-            # Iterate backwards to safely delete items from the list/array
-            for i in range(len(project_deps) - 1, -1, -1):
-                dep_item = project_deps[i]
-                dep_str = str(dep_item)
-                # Logic to extract package name from dependency string
-                package_name = (
-                    dep_str.split(";")[0]
-                    .split("<")[0]
-                    .split(">")[0]
-                    .split("=")[0]
-                    .split("~")[0]
-                    .split("!")[0]
-                    .strip()
-                    .lower()
-                )
+    if "project" in doc:
+        project_section = doc["project"]
+        if isinstance(project_section, dict) and "dependencies" in project_section:
+            project_deps = project_section["dependencies"]
+            if isinstance(project_deps, tomlkit.items.Array):
+                # Iterate backwards to safely delete items from the list/array
+                for i in range(len(project_deps) - 1, -1, -1):
+                    dep_item = project_deps[i]
+                    dep_str = str(dep_item)
+                    # Logic to extract package name from dependency string
+                    package_name = (
+                        dep_str.split(";")[0]
+                        .split("<")[0]
+                        .split(">")[0]
+                        .split("=")[0]
+                        .split("~")[0]
+                        .split("!")[0]
+                        .strip()
+                        .lower()
+                    )
 
-                if package_name in unused_packages:
-                    print(f"   -> Removing standard dependency: **{dep_item}**")
-                    # Delete the item in place
-                    del project_deps[i]
+                    if package_name in unused_packages:
+                        print(f"   -> Removing standard dependency: **{dep_item}**")
+                        # Delete the item in place
+                        del project_deps[i]
 
     # 2. Handle Poetry/Tool-specific dependencies (Table of key-value pairs)
-    if (
-        "tool" in doc
-        and "poetry" in doc["tool"]
-        and "dependencies" in doc["tool"]["poetry"]
-    ):
-        poetry_deps = doc["tool"]["poetry"]["dependencies"]
-        if isinstance(poetry_deps, tomlkit.items.Table):
-            keys_to_remove = set()
-            for pkg, _ in poetry_deps.items():
-                if pkg.lower() in unused_packages and pkg.lower() != "python":
-                    keys_to_remove.add(pkg)
+    if "tool" in doc:
+        tool_section = doc["tool"]
+        if isinstance(tool_section, dict) and "poetry" in tool_section:
+            poetry_section = tool_section["poetry"]
+            if isinstance(poetry_section, dict) and "dependencies" in poetry_section:
+                poetry_deps = poetry_section["dependencies"]
+                if isinstance(poetry_deps, tomlkit.items.Table):
+                    keys_to_remove = set()
+                    for pkg, _ in poetry_deps.items():
+                        if pkg.lower() in unused_packages and pkg.lower() != "python":
+                            keys_to_remove.add(pkg)
 
-            for pkg in keys_to_remove:
-                print(f"   -> Removing Poetry dependency: **{pkg}**")
-                # Delete the key in place
-                del poetry_deps[pkg]
+                    for pkg in keys_to_remove:
+                        print(f"   -> Removing Poetry dependency: **{pkg}**")
+                        # Delete the key in place
+                        del poetry_deps[pkg]
 
     # 3. Write the modified document back
     try:

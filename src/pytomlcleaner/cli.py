@@ -7,25 +7,26 @@ from .cleaner import (
     DependencyAnalyzer,
 )
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Find and optionally clean unused dependencies in pyproject.toml with advanced detection (Python files, shell scripts, YAML configs).",
         prog="pytomlcleaner",
     )
     parser.add_argument(
-        "--path", 
-        default=".", 
-        help="Root directory of the Python project to scan (default: current directory)."
+        "--path",
+        default=".",
+        help="Root directory of the Python project to scan (default: current directory).",
     )
     parser.add_argument(
-        "--toml", 
-        default="pyproject.toml", 
-        help="Path to the pyproject.toml file (default: pyproject.toml)."
+        "--toml",
+        default="pyproject.toml",
+        help="Path to the pyproject.toml file (default: pyproject.toml).",
     )
     parser.add_argument(
-        "--fix", 
-        action="store_true", 
-        help="Remove unused dependencies from pyproject.toml."
+        "--fix",
+        action="store_true",
+        help="Remove unused dependencies from pyproject.toml.",
     )
     parser.add_argument(
         "--verbose",
@@ -33,9 +34,9 @@ def main():
         action="store_true",
         help="Show detailed analysis including what was scanned.",
     )
-    
+
     args = parser.parse_args()
-    
+
     print(f"Scanning code in **{args.path}** and dependencies in **{args.toml}**...")
 
     if args.verbose:
@@ -54,7 +55,9 @@ def main():
         return
 
     print("\n---")
-    print(f"🚨 Found **{len(unused_packages)}** potentially unused package(s) in pyproject.toml:")
+    print(
+        f"🚨 Found **{len(unused_packages)}** potentially unused package(s) in pyproject.toml:"
+    )
     for pkg in sorted(unused_packages):
         print(f"- **{pkg}**")
     print("---")
@@ -72,19 +75,26 @@ def main():
     # 2. Apply fix if requested
     if args.fix:
         print("🗑️ Attempting to remove unused dependencies from pyproject.toml...")
-        
+
         # Confirmation step
-        confirm = input("Are you sure you want to proceed with removal? (y/N): ").strip().lower()
-        
-        if confirm == 'y':
+        confirm = (
+            input("Are you sure you want to proceed with removal? (y/N): ")
+            .strip()
+            .lower()
+        )
+
+        if confirm == "y":
             remove_unused_dependencies(args.toml, unused_packages)
         else:
             print("Action cancelled by user. No changes were made.")
     else:
-        print("\n💡 To automatically remove these dependencies, run again with: `pytomlcleaner --fix`")
+        print(
+            "\n💡 To automatically remove these dependencies, run again with: `pytomlcleaner --fix`"
+        )
         print(
             "   Use `pytomlcleaner --verbose` to see detailed analysis and configuration options."
         )
+
 
 if __name__ == "__main__":
     main()
