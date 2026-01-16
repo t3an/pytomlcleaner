@@ -22,6 +22,7 @@ dependencies = [
     # Used for accurate filtering of built-in modules
     "stdlib-list>=0.10.0",
     "black>=25.11.0",
+    "mypy>=1.19.1",
 ]
 
 [project.scripts]

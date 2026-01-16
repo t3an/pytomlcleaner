@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import ast
 import re
@@ -133,7 +135,40 @@ def normalize_name(name: str) -> str:
 
 
 def is_similar(package_name: str, import_name: str, threshold: float = 0.6) -> bool:
-    """Check if package name and import name are similar using sequence matching."""
+    """
+    Check if a package name and an import name are similar using sequence matching.
+
+    The comparison is performed on normalized names (lowercased with hyphens and
+    underscores removed). Exact matches and simple substring relations are treated
+    as similar without consulting the fuzzy matcher.
+
+    For non-trivial cases, :class:`difflib.SequenceMatcher` is used to compute a
+    similarity ratio in the range [0.0, 1.0]. The ``threshold`` parameter controls
+    how strict this fuzzy comparison is:
+
+    * The default value of ``0.6`` was chosen as a pragmatic balance between
+      catching common naming variations (for example, ``"pandas-datareader"``
+      vs. ``"pandas_datareader"`` or shortened import names) and avoiding
+      spurious matches between unrelated packages and modules.
+    * Increasing the threshold (e.g. to ``0.8`` or ``0.9``) makes matching more
+      conservative: you will see fewer matches, reducing false positives but
+      potentially missing legitimate dependencies that use slightly different
+      names.
+    * Decreasing the threshold (e.g. to ``0.4`` or ``0.5``) makes matching more
+      permissive: you will see more matches, which can help discover loosely
+      related names but increases the risk of false positives in dependency
+      detection.
+
+    Parameters
+    ----------
+    package_name:
+        The name of the installed/discovered package.
+    import_name:
+        The name as it appears in an import statement in the codebase.
+    threshold:
+        Minimum similarity ratio required for the two names to be considered
+        a match. Defaults to ``0.6``.
+    """
     # Normalize both names for comparison
     norm_pkg = normalize_name(package_name)
     norm_imp = normalize_name(import_name)
@@ -229,7 +264,7 @@ class DependencyAnalyzer:
                     if isinstance(node, ast.Import):
                         for alias in node.names:
                             # Extract all parts of the module path
-                            parts = alias.name.split("")
+                            parts = alias.name.split(".")
                             for part in parts:
                                 if part:  # Skip empty strings
                                     self.found_imports.add(part.lower())
@@ -345,7 +380,7 @@ class DependencyAnalyzer:
 
 def get_dependencies(path: str = "pyproject.toml") -> Set[str]:
     """Reads project dependencies from pyproject.toml, targeting PEP 621 and Poetry styles."""
-    dependencies = set()
+    dependencies: set[str] = set()
 
     try:
         with open(path, "rb") as f:
@@ -439,47 +474,49 @@ def remove_unused_dependencies(pyproject_path: str, unused_packages: Set[str]) -
         return
 
     # 1. Handle PEP 621 'project.dependencies' (Array of Strings)
-    if "project" in doc and "dependencies" in doc["project"]:
-        project_deps = doc["project"]["dependencies"]
-        if isinstance(project_deps, tomlkit.items.Array):
-            # Iterate backwards to safely delete items from the list/array
-            for i in range(len(project_deps) - 1, -1, -1):
-                dep_item = project_deps[i]
-                dep_str = str(dep_item)
-                # Logic to extract package name from dependency string
-                package_name = (
-                    dep_str.split(";")[0]
-                    .split("<")[0]
-                    .split(">")[0]
-                    .split("=")[0]
-                    .split("~")[0]
-                    .split("!")[0]
-                    .strip()
-                    .lower()
-                )
+    if "project" in doc:
+        project_section = doc["project"]
+        if isinstance(project_section, dict) and "dependencies" in project_section:
+            project_deps = project_section["dependencies"]
+            if isinstance(project_deps, tomlkit.items.Array):
+                # Iterate backwards to safely delete items from the list/array
+                for i in range(len(project_deps) - 1, -1, -1):
+                    dep_item = project_deps[i]
+                    dep_str = str(dep_item)
+                    # Logic to extract package name from dependency string
+                    package_name = (
+                        dep_str.split(";")[0]
+                        .split("<")[0]
+                        .split(">")[0]
+                        .split("=")[0]
+                        .split("~")[0]
+                        .split("!")[0]
+                        .strip()
+                        .lower()
+                    )
 
-                if package_name in unused_packages:
-                    print(f"   -> Removing standard dependency: **{dep_item}**")
-                    # Delete the item in place
-                    del project_deps[i]
+                    if package_name in unused_packages:
+                        print(f"   -> Removing standard dependency: **{dep_item}**")
+                        # Delete the item in place
+                        del project_deps[i]
 
     # 2. Handle Poetry/Tool-specific dependencies (Table of key-value pairs)
-    if (
-        "tool" in doc
-        and "poetry" in doc["tool"]
-        and "dependencies" in doc["tool"]["poetry"]
-    ):
-        poetry_deps = doc["tool"]["poetry"]["dependencies"]
-        if isinstance(poetry_deps, tomlkit.items.Table):
-            keys_to_remove = set()
-            for pkg, _ in poetry_deps.items():
-                if pkg.lower() in unused_packages and pkg.lower() != "python":
-                    keys_to_remove.add(pkg)
+    if "tool" in doc:
+        tool_section = doc["tool"]
+        if isinstance(tool_section, dict) and "poetry" in tool_section:
+            poetry_section = tool_section["poetry"]
+            if isinstance(poetry_section, dict) and "dependencies" in poetry_section:
+                poetry_deps = poetry_section["dependencies"]
+                if isinstance(poetry_deps, tomlkit.items.Table):
+                    keys_to_remove = set()
+                    for pkg, _ in poetry_deps.items():
+                        if pkg.lower() in unused_packages and pkg.lower() != "python":
+                            keys_to_remove.add(pkg)
 
-            for pkg in keys_to_remove:
-                print(f"   -> Removing Poetry dependency: **{pkg}**")
-                # Delete the key in place
-                del poetry_deps[pkg]
+                    for pkg in keys_to_remove:
+                        print(f"   -> Removing Poetry dependency: **{pkg}**")
+                        # Delete the key in place
+                        del poetry_deps[pkg]
 
     # 3. Write the modified document back
     try:
