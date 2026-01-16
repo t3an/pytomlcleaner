@@ -28,7 +28,7 @@ import os
 import ast
 import re
 import tomlkit
-from typing import Set, Dict, List, Any
+from typing import Set, Dict, List, Any, cast
 import sys
 from pathlib import Path
 from importlib.metadata import distribution, PackageNotFoundError
@@ -499,9 +499,9 @@ def remove_unused_dependencies(pyproject_path: str, unused_packages: Set[str]) -
 
     # 1. Handle PEP 621 'project.dependencies' (Array of Strings)
     if "project" in doc:
-        project_section = doc["project"]
-        if isinstance(project_section, dict) and "dependencies" in project_section:
-            project_deps = project_section["dependencies"]
+        project_section = cast(tomlkit.items.Table, doc["project"])
+        if "dependencies" in project_section:
+            project_deps = cast(tomlkit.items.Array, project_section["dependencies"])
             if isinstance(project_deps, tomlkit.items.Array):
                 # Iterate backwards to safely delete items from the list/array
                 for i in range(len(project_deps) - 1, -1, -1):
@@ -526,11 +526,11 @@ def remove_unused_dependencies(pyproject_path: str, unused_packages: Set[str]) -
 
     # 2. Handle Poetry/Tool-specific dependencies (Table of key-value pairs)
     if "tool" in doc:
-        tool_section = doc["tool"]
-        if isinstance(tool_section, dict) and "poetry" in tool_section:
-            poetry_section = tool_section["poetry"]
-            if isinstance(poetry_section, dict) and "dependencies" in poetry_section:
-                poetry_deps = poetry_section["dependencies"]
+        tool_section = cast(tomlkit.items.Table, doc["tool"])
+        if "poetry" in tool_section:
+            poetry_section = cast(tomlkit.items.Table, tool_section["poetry"])
+            if "dependencies" in poetry_section:
+                poetry_deps = cast(tomlkit.items.Table, poetry_section["dependencies"])
                 if isinstance(poetry_deps, tomlkit.items.Table):
                     keys_to_remove = set()
                     for pkg, _ in poetry_deps.items():
@@ -540,7 +540,7 @@ def remove_unused_dependencies(pyproject_path: str, unused_packages: Set[str]) -
                     for pkg in keys_to_remove:
                         print(f"   -> Removing Poetry dependency: **{pkg}**")
                         # Delete the key in place
-                        del poetry_deps[pkg]
+                        del poetry_deps[pkg]  # type: ignore
 
     # 3. Write the modified document back
     try:
@@ -673,7 +673,7 @@ def populate_pyproject_toml(
         if "project" not in doc:
             doc["project"] = tomlkit.table()
 
-        project_section = doc["project"]
+        project_section = cast(tomlkit.items.Table, doc["project"])
 
         # Set basic project metadata if not present
         if "name" not in project_section:
